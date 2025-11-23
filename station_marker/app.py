@@ -52,7 +52,6 @@ def save_edges(edges):
 def haversine_km(lat1, lon1, lat2, lon2):
     """
     Compute great-circle distance between two points on Earth in kilometers.
-    (Good enough for our use case.)
     """
     R = 6371.0  # Earth radius in km
 
@@ -73,6 +72,34 @@ def node_index_by_id(nodes, node_id):
         if n["id"] == node_id:
             return i
     return -1
+
+
+# =========================
+# DSU for Kruskal
+# =========================
+
+class DisjointSetUnion:
+    """Union-Find data structure for Kruskal's algorithm."""
+    def __init__(self, n: int):
+        self.parent = list(range(n))
+        self.rank = [0] * n
+
+    def find(self, x: int) -> int:
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])  # path compression
+        return self.parent[x]
+
+    def union(self, x: int, y: int) -> bool:
+        rx, ry = self.find(x), self.find(y)
+        if rx == ry:
+            return False
+        # union by rank
+        if self.rank[rx] < self.rank[ry]:
+            rx, ry = ry, rx
+        self.parent[ry] = rx
+        if self.rank[rx] == self.rank[ry]:
+            self.rank[rx] += 1
+        return True
 
 
 # =========================
@@ -162,12 +189,12 @@ def add_edge():
     if source not in node_ids or target not in node_ids:
         return jsonify({"error": "invalid node id"}), 400
 
-    # remove duplicates (undirected: (a,b) == (b,a))
     edges = load_edges()
+    # avoid duplicates (undirected)
     for e in edges:
         if (e["from"] == source and e["to"] == target) or \
            (e["from"] == target and e["to"] == source):
-            # already exists, just return it
+            # already exists
             return jsonify(e), 200
 
     # lookup coordinates
@@ -222,6 +249,65 @@ def undo():
         "status": "ok",
         "removed": removed_node,
         "removed_edges": removed_edges,
+    })
+
+
+@app.route("/mst", methods=["POST"])
+def mst():
+    """
+    Compute the Minimum Spanning Tree using Kruskal's algorithm.
+    Uses distance_km as the weight.
+
+    Returns:
+    {
+      "status": "ok",
+      "mst_edges": [edge, ...],   # same structure as /edges, subset of them
+      "total_distance_km": <float>,
+      "num_nodes": <int>,
+      "num_edges": <int>,
+      "is_spanning": <bool>
+    }
+    """
+    nodes = load_nodes()
+    edges = load_edges()
+
+    if not nodes or not edges:
+        return jsonify({"error": "Need at least one node and one edge"}), 400
+
+    # Map node IDs to indices [0..n-1] for DSU
+    node_ids = sorted(n["id"] for n in nodes)
+    id_to_index = {nid: i for i, nid in enumerate(node_ids)}
+    n = len(node_ids)
+
+    # Prepare edge list for Kruskal: (weight, u_idx, v_idx, edge_obj)
+    kruskal_edges = []
+    for e in edges:
+        u_idx = id_to_index[e["from"]]
+        v_idx = id_to_index[e["to"]]
+        w = e["distance_km"]
+        kruskal_edges.append((w, u_idx, v_idx, e))
+
+    # Sort by weight
+    kruskal_edges.sort(key=lambda x: x[0])
+
+    dsu = DisjointSetUnion(n)
+    mst_edges = []
+    total = 0.0
+
+    for w, u_idx, v_idx, e in kruskal_edges:
+        if dsu.union(u_idx, v_idx):
+            mst_edges.append(e)
+            total += w
+
+    is_spanning = (len(mst_edges) == n - 1) if n > 0 else False
+
+    return jsonify({
+        "status": "ok",
+        "mst_edges": mst_edges,
+        "total_distance_km": total,
+        "num_nodes": n,
+        "num_edges": len(edges),
+        "is_spanning": is_spanning
     })
 
 

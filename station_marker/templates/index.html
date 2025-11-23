@@ -45,7 +45,6 @@
       color: #555;
     }
 
-    /* make edge labels look like small distance tags */
     .edge-label {
       background: rgba(255, 255, 255, 0.8);
       border: 1px solid #aaa;
@@ -59,6 +58,8 @@
 <body>
   <div id="toolbar">
     <button id="undo-btn">Undo last station</button>
+    <button id="mst-btn">Compute MST (Kruskal)</button>
+    <button id="clear-mst-btn">Reset MST view</button>
     <span id="status">Loading...</span>
   </div>
   <div id="map"></div>
@@ -89,17 +90,38 @@
 
     // ---------- Local state ----------
     const stations = new Map();   // id -> {id, lat, lng}
-    const markers  = new Map();   // id -> Leaflet marker
+    const markers  = new Map();   // id -> Leaflet circleMarker
     const polylines = new Map();  // edgeId -> Leaflet polyline
 
     let selectedStationId = null; // for edge creation
+
+    // Styles
+    const NODE_STYLE = {
+      radius: 5,
+      color: "#111",
+      fillColor: "#fff",
+      fillOpacity: 1,
+      weight: 1
+    };
+
+    const DEFAULT_EDGE_STYLE = {
+      weight: 3,
+      color: "#0074D9",
+      opacity: 0.85
+    };
+
+    const MST_EDGE_STYLE = {
+      weight: 4,
+      color: "red",
+      opacity: 0.95
+    };
 
     // ---------- Helpers for drawing ----------
     function addMarkerFromPoint(point) {
       stations.set(point.id, point);
 
-      const marker = L.marker([point.lat, point.lng]);
-      marker.addTo(map);
+      // circleMarker instead of pin icon (bullet point)
+      const marker = L.circleMarker([point.lat, point.lng], NODE_STYLE).addTo(map);
 
       marker.bindPopup(
         `ID: ${point.id}<br>` +
@@ -129,14 +151,9 @@
           [s.lat, s.lng],
           [t.lat, t.lng],
         ],
-        {
-          weight: 3,
-          color: "#0074D9",
-          opacity: 0.85
-        }
+        DEFAULT_EDGE_STYLE
       ).addTo(map);
 
-      // distance label: show permanent tooltip at center of line
       const distanceText = `${edge.distance_km.toFixed(2)} km`;
       line.bindTooltip(distanceText, {
         permanent: true,
@@ -145,6 +162,23 @@
       });
 
       polylines.set(edge.id, line);
+    }
+
+    function resetEdgeStyles() {
+      // set all edges back to default (blue)
+      for (const [edgeId, line] of polylines.entries()) {
+        line.setStyle(DEFAULT_EDGE_STYLE);
+      }
+    }
+
+    function highlightMSTEdges(mstEdges) {
+      // mstEdges is a list of edge objects from backend
+      mstEdges.forEach(edge => {
+        const line = polylines.get(edge.id);
+        if (line) {
+          line.setStyle(MST_EDGE_STYLE);
+        }
+      });
     }
 
     function handleMarkerClick(stationId) {
@@ -297,6 +331,42 @@
           console.error(err);
           setStatus(err.message);
         });
+    });
+
+    // ---------- MST button: run Kruskal and highlight MST ----------
+    document.getElementById("mst-btn").addEventListener("click", function () {
+      setStatus("Computing MST (Kruskal)...");
+      fetch("/mst", { method: "POST" })
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error("Failed to compute MST");
+          }
+          return res.json();
+        })
+        .then((data) => {
+          if (data.status !== "ok") {
+            throw new Error("MST computation error");
+          }
+          const mstEdges = data.mst_edges || [];
+          resetEdgeStyles();
+          highlightMSTEdges(mstEdges);
+
+          const total = data.total_distance_km ?? 0;
+          const isSpanning = data.is_spanning ? "" : " (graph may be disconnected)";
+          setStatus(
+            `MST: ${mstEdges.length} edges, total length ${total.toFixed(2)} km${isSpanning}`
+          );
+        })
+        .catch((err) => {
+          console.error(err);
+          setStatus("Error computing MST");
+        });
+    });
+
+    // ---------- Clear MST highlight / return to original edges ----------
+    document.getElementById("clear-mst-btn").addEventListener("click", function () {
+      resetEdgeStyles();
+      setStatus("MST highlight cleared. Showing all edges with default style.");
     });
   </script>
 </body>
