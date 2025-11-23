@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Station & Edge Editor</title>
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #toolbar {
+      padding: 10px;
+      background: #f5f5f5;
+      border-bottom: 1px solid #ddd;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    #map {
+      width: 100vw;
+      height: calc(100vh - 52px);
+    }
+    button {
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: 1px solid #888;
+      background: white;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #eee;
+    }
+    #status {
+      margin-left: auto;
+      font-size: 0.9rem;
+      color: #555;
+    }
+
+    /* make edge labels look like small distance tags */
+    .edge-label {
+      background: rgba(255, 255, 255, 0.8);
+      border: 1px solid #aaa;
+      padding: 0 3px;
+      border-radius: 3px;
+      font-size: 10px;
+      color: #222;
+    }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <button id="undo-btn">Undo last station</button>
+    <span id="status">Loading...</span>
+  </div>
+  <div id="map"></div>
+
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script>
+    // ---------- Map setup ----------
+    const initialLat = 11.5564;  // Phnom Penh-ish
+    const initialLng = 104.9282;
+
+    const map = L.map("map").setView([initialLat, initialLng], 12);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const statusEl = document.getElementById("status");
+    function setStatus(msg) {
+      statusEl.textContent = msg;
+    }
+
+    // ---------- Local state ----------
+    const stations = new Map();   // id -> {id, lat, lng}
+    const markers  = new Map();   // id -> Leaflet marker
+    const polylines = new Map();  // edgeId -> Leaflet polyline
+
+    let selectedStationId = null; // for edge creation
+
+    // ---------- Helpers for drawing ----------
+    function addMarkerFromPoint(point) {
+      stations.set(point.id, point);
+
+      const marker = L.marker([point.lat, point.lng]);
+      marker.addTo(map);
+
+      marker.bindPopup(
+        `ID: ${point.id}<br>` +
+        `Lat: ${point.lat.toFixed(5)}<br>` +
+        `Lng: ${point.lng.toFixed(5)}`
+      );
+
+      marker.on("click", function (e) {
+        // stop propagation so the map click handler doesn't also fire
+        L.DomEvent.stopPropagation(e);
+        handleMarkerClick(point.id);
+      });
+
+      markers.set(point.id, marker);
+    }
+
+    function addEdgeFromData(edge) {
+      const s = stations.get(edge.from);
+      const t = stations.get(edge.to);
+      if (!s || !t) {
+        console.warn("Edge refers to missing station:", edge);
+        return;
+      }
+
+      const line = L.polyline(
+        [
+          [s.lat, s.lng],
+          [t.lat, t.lng],
+        ],
+        {
+          weight: 3,
+          color: "#0074D9",
+          opacity: 0.85
+        }
+      ).addTo(map);
+
+      // distance label: show permanent tooltip at center of line
+      const distanceText = `${edge.distance_km.toFixed(2)} km`;
+      line.bindTooltip(distanceText, {
+        permanent: true,
+        direction: "center",
+        className: "edge-label"
+      });
+
+      polylines.set(edge.id, line);
+    }
+
+    function handleMarkerClick(stationId) {
+      if (selectedStationId === null) {
+        selectedStationId = stationId;
+        setStatus(
+          `Selected station #${stationId}. ` +
+          `Click another station to connect, or click on the map to add & connect a new station.`
+        );
+      } else if (selectedStationId === stationId) {
+        // deselect if clicked again
+        selectedStationId = null;
+        setStatus("Selection cleared.");
+      } else {
+        // create edge between selectedStationId and stationId
+        const src = selectedStationId;
+        const tgt = stationId;
+        selectedStationId = null;
+        createEdge(src, tgt);
+      }
+    }
+
+    function createEdge(fromId, toId) {
+      setStatus("Saving edge...");
+      fetch("/add_edge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from: fromId, to: toId }),
+      })
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error("Failed to save edge");
+          }
+          return res.json();
+        })
+        .then((edge) => {
+          addEdgeFromData(edge);
+          setStatus(
+            `Edge #${edge.id} added: ${edge.from} ↔ ${edge.to} (${edge.distance_km.toFixed(2)} km)`
+          );
+        })
+        .catch((err) => {
+          console.error(err);
+          setStatus("Error saving edge");
+        });
+    }
+
+    // ---------- Initial load: stations then edges ----------
+    fetch("/points")
+      .then((res) => res.json())
+      .then((points) => {
+        points.forEach(addMarkerFromPoint);
+        setStatus(`Loaded ${points.length} stations. Click map to add more.`);
+        return fetch("/edges");
+      })
+      .then((res) => res.json())
+      .then((edges) => {
+        edges.forEach(addEdgeFromData);
+        if (edges.length > 0) {
+          setStatus(
+            `Loaded ${stations.size} stations and ${edges.length} edges.`
+          );
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        setStatus("Failed to load initial data");
+      });
+
+    // ---------- Map click: add new station (and maybe connect) ----------
+    map.on("click", function (e) {
+      const lat = e.latlng.lat;
+      const lng = e.latlng.lng;
+
+      setStatus("Saving station...");
+
+      fetch("/add_point", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lat, lng }),
+      })
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error("Failed to save station");
+          }
+          return res.json();
+        })
+        .then((point) => {
+          addMarkerFromPoint(point);
+          setStatus(
+            `Added station #${point.id} at (${lat.toFixed(
+              5
+            )}, ${lng.toFixed(5)}).`
+          );
+
+          // If a station was selected, connect it to this new one.
+          if (selectedStationId !== null) {
+            const src = selectedStationId;
+            selectedStationId = null;
+            createEdge(src, point.id);
+          }
+        })
+        .catch((err) => {
+          console.error(err);
+          setStatus("Error saving station");
+        });
+    });
+
+    // ---------- Undo last station (and its edges) ----------
+    document.getElementById("undo-btn").addEventListener("click", function () {
+      setStatus("Undoing last station...");
+
+      fetch("/undo", { method: "POST" })
+        .then((res) => {
+          if (!res.ok) {
+            if (res.status === 400) {
+              throw new Error("No stations to undo.");
+            }
+            throw new Error("Undo failed.");
+          }
+          return res.json();
+        })
+        .then((data) => {
+          const removed = data.removed;
+          const removedEdges = data.removed_edges || [];
+
+          // remove marker
+          const marker = markers.get(removed.id);
+          if (marker) {
+            map.removeLayer(marker);
+            markers.delete(removed.id);
+          }
+          stations.delete(removed.id);
+
+          // remove polylines for removed edges
+          removedEdges.forEach((edge) => {
+            const poly = polylines.get(edge.id);
+            if (poly) {
+              map.removeLayer(poly);
+              polylines.delete(edge.id);
+            }
+          });
+
+          selectedStationId = null;
+          setStatus(
+            `Removed station #${removed.id} and ${removedEdges.length} edge(s).`
+          );
+        })
+        .catch((err) => {
+          console.error(err);
+          setStatus(err.message);
+        });
+    });
+  </script>
+</body>
+</html>
