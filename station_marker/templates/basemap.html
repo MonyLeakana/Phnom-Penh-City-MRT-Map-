@@ -2,9 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Station & Edge Editor</title>
+  <title>Base Map Editor</title>
 
-  <!-- Leaflet CSS -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -22,8 +21,6 @@
     #app {
       padding: 16px 24px;
     }
-
-    /* Toolbar pills */
     #toolbar {
       display: flex;
       align-items: center;
@@ -46,37 +43,28 @@
       color: #555;
     }
 
-    /* Map frame */
     #map-frame {
       margin: 0 40px;
       border: 2px solid #000;
-      height: 75vh;
+      height: 70vh;
     }
-    #map {
-      width: 100%;
-      height: 100%;
-    }
+    #map { width: 100%; height: 100%; }
 
-    /* Bottom row: distance left, confirm button right */
     #bottom-row {
       margin-top: 18px;
       margin-left: 40px;
       margin-right: 40px;
       display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-    }
-    #distance-panel {
+      justify-content: flex-start;
       font-size: 18px;
       line-height: 1.4;
     }
-    #distance-panel strong { display: block; }
-    #total-distance-value {
-      font-weight: 600;
+    #bottom-row strong {
+      margin-right: 6px;
     }
 
     .edge-label {
-      background: rgba(255, 255, 255, 0.8);
+      background: rgba(255,255,255,0.8);
       border: 1px solid #aaa;
       padding: 0 3px;
       border-radius: 3px;
@@ -88,11 +76,11 @@
 <body>
   <div id="app">
     <div id="toolbar">
+      <button onclick="window.location.href='/'">Back to Design</button>
       <button id="undo-btn">Undo</button>
       <button id="erase-edge-btn">Erase Edge</button>
       <button id="auto-edge-btn">Auto Edge</button>
-      <button id="show-mst-btn">Show MST Only</button>
-      <span id="status">Loading...</span>
+      <span id="status">Loading base map...</span>
     </div>
 
     <div id="map-frame">
@@ -100,15 +88,11 @@
     </div>
 
     <div id="bottom-row">
-      <div id="distance-panel">
-        <strong>Total Distance:</strong>
-        <span id="total-distance-value">N/A</span>
-      </div>
-      <button id="confirm-base-btn">Confirm Base Map</button>
+      <strong>Total Distance (Base Map):</strong>
+      <span id="base-total-distance">0.00 km</span>
     </div>
   </div>
 
-  <!-- Leaflet JS -->
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
@@ -116,7 +100,6 @@
   ></script>
 
   <script>
-    // ---------- Map setup ----------
     const initialLat = 11.5564;
     const initialLng = 104.9282;
     const map = L.map("map").setView([initialLat, initialLng], 12);
@@ -127,17 +110,16 @@
     }).addTo(map);
 
     const statusEl = document.getElementById("status");
-    const totalDistanceEl = document.getElementById("total-distance-value");
+    const totalBaseDistanceEl = document.getElementById("base-total-distance");
     function setStatus(msg) { statusEl.textContent = msg; }
 
-    // ---------- Local state ----------
-    const stations = new Map();   // id -> {id, lat, lng}
-    const markers  = new Map();   // id -> circleMarker
-    const polylines = new Map();  // edgeId -> polyline
+    const stations = new Map();
+    const markers  = new Map();
+    const polylines = new Map();
+    let edgesCache = [];          // keep all base-map edges here to sum distance
 
     let selectedStationId = null;
     let eraseEdgeMode = false;
-    let mstOnlyMode = false;
 
     const NODE_STYLE = {
       radius: 5,
@@ -146,18 +128,22 @@
       fillOpacity: 1,
       weight: 1
     };
-    const DEFAULT_EDGE_STYLE = {
+    const EDGE_STYLE = {
       weight: 3,
       color: "#0074D9",
       opacity: 0.85
     };
-    const MST_EDGE_STYLE = {
-      weight: 4,
-      color: "red",
-      opacity: 0.95
-    };
 
-    // ---------- Helpers ----------
+    function updateTotalDistance() {
+      let total = 0;
+      for (const e of edgesCache) {
+        if (typeof e.distance_km === "number") {
+          total += e.distance_km;
+        }
+      }
+      totalBaseDistanceEl.textContent = total.toFixed(2) + " km";
+    }
+
     function addMarkerFromPoint(point) {
       stations.set(point.id, point);
       const marker = L.circleMarker([point.lat, point.lng], NODE_STYLE).addTo(map);
@@ -173,12 +159,12 @@
       markers.set(point.id, marker);
     }
 
-    function addEdgeFromData(edge) {
+    function addEdgeFromData(edge, addToCache = true) {
       const s = stations.get(edge.from);
       const t = stations.get(edge.to);
       if (!s || !t) return;
 
-      const line = L.polyline([[s.lat, s.lng],[t.lat, t.lng]], DEFAULT_EDGE_STYLE).addTo(map);
+      const line = L.polyline([[s.lat, s.lng],[t.lat, t.lng]], EDGE_STYLE).addTo(map);
       line.bindTooltip(`${edge.distance_km.toFixed(2)} km`, {
         permanent: true,
         direction: "center",
@@ -190,29 +176,16 @@
         deleteEdge(edge.id);
       });
       polylines.set(edge.id, line);
-    }
 
-    function resetEdgeStyles() {
-      for (const [, line] of polylines.entries()) {
-        line.setStyle(DEFAULT_EDGE_STYLE);
+      if (addToCache) {
+        edgesCache.push(edge);
+        updateTotalDistance();
       }
-    }
-    function showAllEdges() {
-      for (const [, line] of polylines.entries()) line.addTo(map);
-    }
-    function hideAllEdges() {
-      for (const [, line] of polylines.entries()) map.removeLayer(line);
-    }
-    function highlightMSTEdges(mstEdges) {
-      mstEdges.forEach(edge => {
-        const line = polylines.get(edge.id);
-        if (line) line.setStyle(MST_EDGE_STYLE);
-      });
     }
 
     function handleMarkerClick(stationId) {
       if (eraseEdgeMode) {
-        setStatus("Edge erase mode active. Click an edge to delete it.");
+        setStatus("Edge erase mode: click an edge to delete it.");
         return;
       }
       if (selectedStationId === null) {
@@ -230,12 +203,8 @@
     }
 
     function createEdge(fromId, toId) {
-      mstOnlyMode = false;
-      showAllEdges();
-      resetEdgeStyles();
-
       setStatus("Saving edge...");
-      fetch("/add_edge", {
+      fetch("/basemap/add_edge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ from: fromId, to: toId }),
@@ -245,7 +214,7 @@
           return res.json();
         })
         .then(edge => {
-          addEdgeFromData(edge);
+          addEdgeFromData(edge, true);
           setStatus(
             `Edge #${edge.id} added: ${edge.from} ↔ ${edge.to} `
             + `(${edge.distance_km.toFixed(2)} km)`
@@ -258,12 +227,8 @@
     }
 
     function deleteEdge(edgeId) {
-      mstOnlyMode = false;
-      showAllEdges();
-      resetEdgeStyles();
-
       setStatus(`Deleting edge #${edgeId}...`);
-      fetch("/delete_edge", {
+      fetch("/basemap/delete_edge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ edge_id: edgeId }),
@@ -279,6 +244,10 @@
             map.removeLayer(line);
             polylines.delete(removed.id);
           }
+          // remove from cache and recompute total
+          edgesCache = edgesCache.filter(e => e.id !== removed.id);
+          updateTotalDistance();
+
           setStatus(`Deleted edge #${removed.id} (${removed.from} ↔ ${removed.to}).`);
         })
         .catch(err => {
@@ -287,42 +256,39 @@
         });
     }
 
-    // ---------- Initial load ----------
-    fetch("/points")
+    // Initial load (MST as base map)
+    fetch("/basemap/points")
       .then(res => res.json())
       .then(points => {
         points.forEach(addMarkerFromPoint);
-        setStatus(`Loaded ${points.length} stations. Click map to add more.`);
-        return fetch("/edges");
+        setStatus(`Loaded ${points.length} base-map stations.`);
+        return fetch("/basemap/edges");
       })
       .then(res => res.json())
       .then(edges => {
-        edges.forEach(addEdgeFromData);
-        if (edges.length > 0) {
-          setStatus(`Loaded ${stations.size} stations and ${edges.length} edges.`);
-        }
+        // cache all edges first
+        edgesCache = edges.slice();
+        // draw them but don't double-add to cache
+        edges.forEach(e => addEdgeFromData(e, false));
+        updateTotalDistance();
+        setStatus(`Loaded ${stations.size} stations and ${edges.length} MST edges.`);
       })
       .catch(err => {
         console.error(err);
-        setStatus("Failed to load initial data");
+        setStatus("Failed to load base map.");
       });
 
-    // ---------- Map click: add station ----------
+    // Map click: add node
     map.on("click", function (e) {
       if (eraseEdgeMode) {
-        setStatus("Edge erase mode active. Click an edge to delete it.");
+        setStatus("Edge erase mode: click an edge to delete it.");
         return;
       }
-
-      mstOnlyMode = false;
-      showAllEdges();
-      resetEdgeStyles();
-
       const lat = e.latlng.lat;
       const lng = e.latlng.lng;
 
       setStatus("Saving station...");
-      fetch("/add_point", {
+      fetch("/basemap/add_point", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lat, lng }),
@@ -348,15 +314,11 @@
         });
     });
 
-    // ---------- Buttons ----------
+    // Buttons
     document.getElementById("undo-btn").addEventListener("click", function () {
-      mstOnlyMode = false;
       eraseEdgeMode = false;
-      showAllEdges();
-      resetEdgeStyles();
-
       setStatus("Undoing last station...");
-      fetch("/undo", { method: "POST" })
+      fetch("/basemap/undo", { method: "POST" })
         .then(res => {
           if (!res.ok) {
             if (res.status === 400) throw new Error("No stations to undo.");
@@ -381,7 +343,10 @@
               map.removeLayer(poly);
               polylines.delete(edge.id);
             }
+            // remove from cache
+            edgesCache = edgesCache.filter(e => e.id !== edge.id);
           });
+          updateTotalDistance();
 
           selectedStationId = null;
           setStatus(
@@ -395,10 +360,6 @@
     });
 
     document.getElementById("erase-edge-btn").addEventListener("click", function () {
-      mstOnlyMode = false;
-      showAllEdges();
-      resetEdgeStyles();
-
       eraseEdgeMode = !eraseEdgeMode;
       selectedStationId = null;
       if (eraseEdgeMode) {
@@ -409,12 +370,8 @@
     });
 
     document.getElementById("auto-edge-btn").addEventListener("click", function () {
-      mstOnlyMode = false;
-      showAllEdges();
-      resetEdgeStyles();
-
-      setStatus("Generating auto edges (> 1 km)...");
-      fetch("/auto_edges", { method: "POST" })
+      setStatus("Generating auto edges (> 1 km) on base map...");
+      fetch("/basemap/auto_edges", { method: "POST" })
         .then(res => {
           if (!res.ok) throw new Error("Failed to auto-generate edges");
           return res.json();
@@ -422,76 +379,12 @@
         .then(data => {
           const added = data.added || 0;
           const newEdges = data.edges || [];
-          newEdges.forEach(addEdgeFromData);
+          newEdges.forEach(e => addEdgeFromData(e, true));
           setStatus(`Auto edges added: ${added} new edge(s) (> 1 km).`);
         })
         .catch(err => {
           console.error(err);
           setStatus("Error generating auto edges");
-        });
-    });
-
-    document.getElementById("show-mst-btn").addEventListener("click", function () {
-      if (!mstOnlyMode) {
-        setStatus("Computing MST and showing only MST edges...");
-        fetch("/mst", { method: "POST" })
-          .then(res => {
-            if (!res.ok) throw new Error("Failed to compute MST");
-            return res.json();
-          })
-          .then(data => {
-            if (data.status !== "ok") throw new Error("MST error");
-            const mstEdges = data.mst_edges || [];
-
-            hideAllEdges();
-            mstEdges.forEach(edge => {
-              const line = polylines.get(edge.id);
-              if (line) {
-                line.setStyle(MST_EDGE_STYLE);
-                line.addTo(map);
-              }
-            });
-
-            const total = data.total_distance_km ?? 0;
-            totalDistanceEl.textContent = `${total.toFixed(2)} km`;
-
-            mstOnlyMode = true;
-
-            const isSpanning = data.is_spanning ? "" : " (graph may be disconnected)";
-            setStatus(
-              `MST only view: ${mstEdges.length} edges, total length ${total.toFixed(2)} km${isSpanning}`
-            );
-          })
-          .catch(err => {
-            console.error(err);
-            setStatus("Error computing MST");
-          });
-      } else {
-        mstOnlyMode = false;
-        showAllEdges();
-        resetEdgeStyles();
-        setStatus("Showing all edges again.");
-      }
-    });
-
-    // Confirm Base Map -> save MST to basemap_*.json and go to /basemap
-    document.getElementById("confirm-base-btn").addEventListener("click", function () {
-      setStatus("Confirming base map (computing MST and saving)...");
-      fetch("/confirm_base_map", { method: "POST" })
-        .then(res => {
-          if (!res.ok) throw new Error("Failed to confirm base map");
-          return res.json();
-        })
-        .then(data => {
-          if (data.status !== "ok") throw new Error("MST error");
-          const total = data.total_distance_km ?? 0;
-          totalDistanceEl.textContent = `${total.toFixed(2)} km`;
-          // Go to base map editor
-          window.location.href = "/basemap";
-        })
-        .catch(err => {
-          console.error(err);
-          setStatus("Error confirming base map");
         });
     });
   </script>
