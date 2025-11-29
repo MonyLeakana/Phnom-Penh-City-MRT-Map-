@@ -77,7 +77,8 @@
   <div id="app">
     <div id="toolbar">
       <button onclick="window.location.href='/'">Back to Design</button>
-      <button id="undo-btn">Undo</button>
+      <button id="undo-btn">Undo Station</button>
+      <button id="erase-node-btn">Erase Station</button>
       <button id="erase-edge-btn">Erase Edge</button>
       <button id="auto-edge-btn">Auto Edge</button>
       <span id="status">Loading base map...</span>
@@ -120,6 +121,7 @@
 
     let selectedStationId = null;
     let eraseEdgeMode = false;
+    let eraseNodeMode = false;
 
     const NODE_STYLE = {
       radius: 5,
@@ -142,6 +144,16 @@
         }
       }
       totalBaseDistanceEl.textContent = total.toFixed(2) + " km";
+    }
+
+    function clearAll() {
+      markers.forEach(m => map.removeLayer(m));
+      polylines.forEach(l => map.removeLayer(l));
+      markers.clear();
+      polylines.clear();
+      stations.clear();
+      edgesCache = [];
+      updateTotalDistance();
     }
 
     function addMarkerFromPoint(point) {
@@ -183,7 +195,19 @@
       }
     }
 
+    function redrawFrom(nodes, edges) {
+      clearAll();
+      nodes.forEach(addMarkerFromPoint);
+      edgesCache = edges.slice();
+      edges.forEach(e => addEdgeFromData(e, false));
+      updateTotalDistance();
+    }
+
     function handleMarkerClick(stationId) {
+      if (eraseNodeMode) {
+        deleteNode(stationId);
+        return;
+      }
       if (eraseEdgeMode) {
         setStatus("Edge erase mode: click an edge to delete it.");
         return;
@@ -244,10 +268,8 @@
             map.removeLayer(line);
             polylines.delete(removed.id);
           }
-          // remove from cache and recompute total
           edgesCache = edgesCache.filter(e => e.id !== removed.id);
           updateTotalDistance();
-
           setStatus(`Deleted edge #${removed.id} (${removed.from} ↔ ${removed.to}).`);
         })
         .catch(err => {
@@ -256,7 +278,36 @@
         });
     }
 
-    // Initial load (MST as base map)
+    function deleteNode(nodeId) {
+      setStatus(`Deleting station #${nodeId}...`);
+      fetch("/basemap/delete_node", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_id: nodeId }),
+      })
+        .then(res => {
+          if (!res.ok) throw new Error("Failed to delete station");
+          return res.json();
+        })
+        .then(data => {
+          if (data.status !== "ok") throw new Error("Delete station error");
+          const nodes = data.nodes || [];
+          const edges = data.edges || [];
+          redrawFrom(nodes, edges);
+          eraseNodeMode = false;
+          selectedStationId = null;
+          setStatus(
+            `Deleted station #${data.removed_node_id} and `
+            + `${data.removed_edges_count} connected edge(s).`
+          );
+        })
+        .catch(err => {
+          console.error(err);
+          setStatus("Error deleting station");
+        });
+    }
+
+    // ---------- Initial load (MST as base map) ----------
     fetch("/basemap/points")
       .then(res => res.json())
       .then(points => {
@@ -266,9 +317,7 @@
       })
       .then(res => res.json())
       .then(edges => {
-        // cache all edges first
         edgesCache = edges.slice();
-        // draw them but don't double-add to cache
         edges.forEach(e => addEdgeFromData(e, false));
         updateTotalDistance();
         setStatus(`Loaded ${stations.size} stations and ${edges.length} MST edges.`);
@@ -278,10 +327,14 @@
         setStatus("Failed to load base map.");
       });
 
-    // Map click: add node
+    // ---------- Map click: add node ----------
     map.on("click", function (e) {
-      if (eraseEdgeMode) {
-        setStatus("Edge erase mode: click an edge to delete it.");
+      if (eraseEdgeMode || eraseNodeMode) {
+        setStatus(
+          eraseNodeMode
+            ? "Station erase mode: click a station marker to delete it."
+            : "Edge erase mode: click an edge to delete it."
+        );
         return;
       }
       const lat = e.latlng.lat;
@@ -314,9 +367,10 @@
         });
     });
 
-    // Buttons
+    // ---------- Buttons ----------
     document.getElementById("undo-btn").addEventListener("click", function () {
       eraseEdgeMode = false;
+      eraseNodeMode = false;
       setStatus("Undoing last station...");
       fetch("/basemap/undo", { method: "POST" })
         .then(res => {
@@ -343,7 +397,6 @@
               map.removeLayer(poly);
               polylines.delete(edge.id);
             }
-            // remove from cache
             edgesCache = edgesCache.filter(e => e.id !== edge.id);
           });
           updateTotalDistance();
@@ -361,11 +414,23 @@
 
     document.getElementById("erase-edge-btn").addEventListener("click", function () {
       eraseEdgeMode = !eraseEdgeMode;
+      eraseNodeMode = false;
       selectedStationId = null;
       if (eraseEdgeMode) {
         setStatus("Edge erase mode ON. Click an edge to delete it.");
       } else {
         setStatus("Edge erase mode OFF.");
+      }
+    });
+
+    document.getElementById("erase-node-btn").addEventListener("click", function () {
+      eraseNodeMode = !eraseNodeMode;
+      eraseEdgeMode = false;
+      selectedStationId = null;
+      if (eraseNodeMode) {
+        setStatus("Station erase mode ON. Click a station marker to delete it.");
+      } else {
+        setStatus("Station erase mode OFF.");
       }
     });
 

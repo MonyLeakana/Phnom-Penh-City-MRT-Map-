@@ -168,6 +168,47 @@ def compute_mst(nodes, edges):
 
 
 # =========================
+# Helpers: delete + renumber
+# =========================
+
+def delete_and_renumber(nodes, edges, node_id):
+    """
+    Remove node_id and its incident edges.
+    Then renumber remaining node IDs to 1..N and
+    update edge endpoints accordingly.
+    Returns (new_nodes, new_edges, removed_edges_count).
+    """
+    node_id = int(node_id)
+
+    # remove the node
+    new_nodes = [n for n in nodes if n["id"] != node_id]
+
+    # split edges into remaining vs removed
+    remaining_edges = []
+    removed_edges = []
+    for e in edges:
+        if e["from"] == node_id or e["to"] == node_id:
+            removed_edges.append(e)
+        else:
+            remaining_edges.append(e)
+
+    # renumber nodes sequentially by old id order
+    new_nodes_sorted = sorted(new_nodes, key=lambda n: n["id"])
+    id_map = {}
+    for new_id, n in enumerate(new_nodes_sorted, start=1):
+        old_id = n["id"]
+        id_map[old_id] = new_id
+        n["id"] = new_id
+
+    # update edge endpoints
+    for e in remaining_edges:
+        e["from"] = id_map[e["from"]]
+        e["to"] = id_map[e["to"]]
+
+    return new_nodes_sorted, remaining_edges, len(removed_edges)
+
+
+# =========================
 # Main design page routes
 # =========================
 
@@ -273,6 +314,38 @@ def undo():
         "status": "ok",
         "removed": removed_node,
         "removed_edges": removed_edges,
+    })
+
+
+@app.route("/delete_node", methods=["POST"])
+def delete_node():
+    """Delete any station by id, remove its edges, renumber remaining nodes."""
+    data = request.get_json()
+    node_id = data.get("node_id")
+    if node_id is None:
+        return jsonify({"error": "node_id is required"}), 400
+
+    try:
+        node_id = int(node_id)
+    except ValueError:
+        return jsonify({"error": "node_id must be an integer"}), 400
+
+    nodes = load_nodes()
+    edges = load_edges()
+
+    if not any(n["id"] == node_id for n in nodes):
+        return jsonify({"error": "node not found"}), 404
+
+    new_nodes, new_edges, removed_edges_count = delete_and_renumber(nodes, edges, node_id)
+    save_nodes(new_nodes)
+    save_edges(new_edges)
+
+    return jsonify({
+        "status": "ok",
+        "removed_node_id": node_id,
+        "removed_edges_count": removed_edges_count,
+        "nodes": new_nodes,
+        "edges": new_edges
     })
 
 
@@ -592,6 +665,38 @@ def basemap_auto_edges():
     return jsonify({
         "status": "ok",
         "added": len(new_edges),
+        "edges": new_edges
+    })
+
+
+@app.route("/basemap/delete_node", methods=["POST"])
+def basemap_delete_node():
+    """Delete any base-map station by id, remove its edges, renumber IDs."""
+    data = request.get_json()
+    node_id = data.get("node_id")
+    if node_id is None:
+        return jsonify({"error": "node_id is required"}), 400
+
+    try:
+        node_id = int(node_id)
+    except ValueError:
+        return jsonify({"error": "node_id must be an integer"}), 400
+
+    nodes = load_base_nodes()
+    edges = load_base_edges()
+
+    if not any(n["id"] == node_id for n in nodes):
+        return jsonify({"error": "node not found"}), 404
+
+    new_nodes, new_edges, removed_edges_count = delete_and_renumber(nodes, edges, node_id)
+    save_base_nodes(new_nodes)
+    save_base_edges(new_edges)
+
+    return jsonify({
+        "status": "ok",
+        "removed_node_id": node_id,
+        "removed_edges_count": removed_edges_count,
+        "nodes": new_nodes,
         "edges": new_edges
     })
 
